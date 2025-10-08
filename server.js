@@ -13,7 +13,7 @@ const env = require('dotenv').config().parsed;
 const app = express();
 const port = 3001;
 
-const JWT_SECRET = 'reeces_super_secret_token';
+const JWT_SECRET = process.env.ENCRYPTION_KEY;
 const FRONTEND_URL = "http://localhost:3000";
 
 // Microsoft OAuth Details
@@ -104,7 +104,15 @@ const verifyToken = (req, res, next) => {
 
 
 
-
+app.get('/api/auth/microsoft', (req, res) => {
+	const authUrl = `${AZURE_CONFIG.AUTHORITY}/oauth2/v2.0/authorize?` +
+		`client_id=${AZURE_CONFIG.CLIENT_ID}` +
+		`&response_type=code` +
+		`&redirect_uri=${AZURE_CONFIG.REDIRECT_URI}` +
+		`&response_mode=query` +
+		`&scope=${AZURE_CONFIG.SCOPES}`;
+	res.redirect(authUrl);
+});
 
 
 app.get('/redirect', async (req, res) => {
@@ -224,6 +232,7 @@ app.get('/api/students', async (req, res) => {
         SELECT u.id, u.name, p.major, p.year, p.skills, p.profile_pic_url as profilePic
         FROM users u JOIN student_profiles p ON u.id = p.user_id WHERE u.account_type = 'student'
     `);
+
 	res.json(rows.map(s => ({ ...s, skills: s.skills ? JSON.parse(s.skills) : [] })));
 });
 
