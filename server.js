@@ -39,6 +39,7 @@ app.use(express.json());
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+
 const uploadDir = 'uploads';
 if (!fs.existsSync(uploadDir)) {
 	fs.mkdirSync(uploadDir);
@@ -49,7 +50,6 @@ const storage = multer.diskStorage({
 		cb(null, uploadDir)
 	},
 	filename: function (req, file, cb) {
-		// Create a unique filename to avoid overwrites
 		cb(null, `${file.fieldname}-${Date.now()}${path.extname(file.originalname)}`)
 	}
 });
@@ -57,10 +57,10 @@ const storage = multer.diskStorage({
 const upload = multer({
 	storage: storage,
 	limits: {
-		fileSize: 5 * 1024 * 1024 // 5MB
+		fileSize: 5 * 1024 * 1024
 	},
 	fileFilter: (req, file, cb) => {
-		const filetypes = /jpeg|jpg|png/;
+		const filetypes = /jpeg|jpg|png|gif/;
 		const mimetype = filetypes.test(file.mimetype);
 		const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
 		if (mimetype && extname) {
@@ -69,6 +69,7 @@ const upload = multer({
 		cb(new Error("Error: File upload only supports the following filetypes - " + filetypes));
 	}
 });
+
 
 let connection;
 
@@ -97,13 +98,6 @@ const verifyToken = (req, res, next) => {
 };
 
 
-
-
-
-// API Requests
-
-
-
 app.get('/api/auth/microsoft', (req, res) => {
 	const authUrl = `${AZURE_CONFIG.AUTHORITY}/oauth2/v2.0/authorize?` +
 		`client_id=${AZURE_CONFIG.CLIENT_ID}` +
@@ -113,7 +107,6 @@ app.get('/api/auth/microsoft', (req, res) => {
 		`&scope=${AZURE_CONFIG.SCOPES}`;
 	res.redirect(authUrl);
 });
-
 
 app.get('/redirect', async (req, res) => {
 	const { code } = req.query;
@@ -160,7 +153,7 @@ app.get('/redirect', async (req, res) => {
 		}
 
 		const appToken = jwt.sign(
-			{ userId: user.id, name: user.name, email: user.email, accountType: user.account_type, companyId: null },
+			{ userId: user.id, name: user.name, email: user.email, accountType: user.account_type, companyId: null, subscriptionTier: user.subscription_tier },
 			JWT_SECRET,
 			{ expiresIn: "2h" }
 		);
@@ -213,7 +206,7 @@ app.post('/api/login', async (req, res) => {
 
 		if (user && (await bcrypt.compare(password, user.password_hash))) {
 			const token = jwt.sign(
-				{ userId: user.id, name: user.name, email: user.email, accountType: user.account_type, companyId: user.company_id },
+				{ userId: user.id, name: user.name, email: user.email, accountType: user.account_type, companyId: user.company_id, subscriptionTier: null },
 				JWT_SECRET,
 				{ expiresIn: "2h" }
 			);
@@ -229,22 +222,20 @@ app.post('/api/login', async (req, res) => {
 
 app.get('/api/students', async (req, res) => {
 	const [rows] = await connection.execute(`
-        SELECT u.id, u.name, p.major, p.year, p.skills, p.profile_pic_url as profilePic
+        SELECT u.id, u.name, p.major, p.year, p.skills, p.profile_pic_url as profilePic, u.subscription_tier as subscriptionTier
         FROM users u JOIN student_profiles p ON u.id = p.user_id WHERE u.account_type = 'student'
     `);
-
 	res.json(rows.map(s => ({ ...s, skills: s.skills ? JSON.parse(s.skills) : [] })));
 });
 
 app.get('/api/students/:id', async (req, res) => {
 	const [rows] = await connection.execute(`
-        SELECT u.id, u.name, p.major, p.year, p.bio, p.skills, p.profile_pic_url as profilePic
+        SELECT u.id, u.name, p.major, p.year, p.bio, p.skills, p.profile_pic_url as profilePic, u.subscription_tier as subscriptionTier
         FROM users u JOIN student_profiles p ON u.id = p.user_id WHERE u.id = ?
     `, [req.params.id]);
 	if (rows.length === 0) return res.status(404).json({ error: 'Student not found' });
 	res.json({ ...rows[0], skills: rows[0].skills ? JSON.parse(rows[0].skills) : [] });
 });
-
 
 app.get('/api/companies', async (req, res) => {
 	const [rows] = await connection.execute('SELECT id, name, industry, description, location, logo_url as profilePic FROM companies');
@@ -256,42 +247,6 @@ app.get('/api/companies/:id', async (req, res) => {
 	if (companyRows.length === 0) return res.status(404).json({ error: 'Company not found' });
 	const [jobRows] = await connection.execute('SELECT * FROM jobs WHERE company_id = ?', [req.params.id]);
 	res.json({ company: companyRows[0], jobs: jobRows });
-});
-
-
-app.get('/api/jobs/:jobId/applicants', verifyToken, async (req, res) => {
-	const { jobId } = req.params;
-
-	if (req.user.accountType !== 'company' || !req.user.companyId) {
-		return res.status(403).json({ error: 'Forbidden: Access denied.' });
-	}
-
-	try {
-		// this is to make sure the job actually is accessible to the company, meaning we can't do a request of ANY companies job posting
-		const [jobRows] = await connection.execute('SELECT company_id FROM jobs WHERE id = ?', [jobId]);
-		if (jobRows.length === 0 || jobRows[0].company_id !== req.user.companyId) {
-			return res.status(403).json({ error: 'Forbidden: You do not own this job posting.' });
-		}
-
-		const [applicants] = await connection.execute(`
-			SELECT 
-				u.id, 
-				u.name, 
-				sp.profile_pic_url AS profilePic, 
-				sp.major, 
-				sp.year
-			FROM applications a
-			JOIN users u ON a.student_id = u.id
-			LEFT JOIN student_profiles sp ON u.id = sp.user_id
-			WHERE a.job_id = ?
-		`, [jobId]);
-
-		res.json(applicants);
-
-	} catch (error) {
-		console.error('Error fetching applicants:', error);
-		res.status(500).json({ error: 'Internal server error' });
-	}
 });
 
 app.get('/api/jobs', async (req, res) => {
@@ -328,6 +283,7 @@ app.post('/api/upload', verifyToken, upload.single('profilePic'), async (req, re
 		res.status(500).json({ error: 'Failed to save upload reference.' });
 	}
 });
+
 
 app.put('/api/students/:id', verifyToken, async (req, res) => {
 	if (req.user.userId !== parseInt(req.params.id)) return res.status(403).json({ error: "Forbidden" });
@@ -368,18 +324,169 @@ app.delete('/api/jobs/:id', verifyToken, async (req, res) => {
 
 app.get('/api/applications', verifyToken, async (req, res) => {
 	if (req.user.accountType !== 'student') return res.status(403).json({ error: "Forbidden" });
-	const [rows] = await connection.execute('SELECT job_id FROM applications WHERE student_id = ?', [req.user.userId]);
-	res.json(rows.map(r => r.job_id));
+	const [rows] = await connection.execute(`
+        SELECT a.job_id, a.status, j.title, c.name as company 
+        FROM applications a 
+        JOIN jobs j ON a.job_id = j.id
+        JOIN companies c ON j.company_id = c.id
+        WHERE a.student_id = ?
+    `, [req.user.userId]);
+	res.json(rows);
 });
 
 app.post('/api/applications', verifyToken, async (req, res) => {
 	if (req.user.accountType !== 'student') return res.status(403).json({ error: "Forbidden" });
+	const [existing] = await connection.execute('SELECT id FROM applications WHERE student_id = ? AND job_id = ?', [req.user.userId, req.body.jobId]);
+	if (existing.length > 0) {
+		return res.status(409).json({ error: "You have already applied for this job." });
+	}
 	await connection.execute('INSERT INTO applications (student_id, job_id) VALUES (?, ?)', [req.user.userId, req.body.jobId]);
 	res.status(201).json({ message: 'Applied' });
 });
 
+app.put('/api/applications/:id/status', verifyToken, async (req, res) => {
+	if (req.user.accountType !== 'company') return res.status(403).json({ error: "Forbidden" });
+
+	const { status } = req.body;
+	const { id: applicationId } = req.params;
+	const { companyId } = req.user;
+
+	if (!['accepted', 'declined'].includes(status)) {
+		return res.status(400).json({ error: "Invalid status." });
+	}
+
+	try {
+		const [appRows] = await connection.execute(`
+            SELECT a.student_id, j.company_id, j.title, c.name as company_name
+            FROM applications a
+            JOIN jobs j ON a.job_id = j.id
+            JOIN companies c on j.company_id = c.id
+            WHERE a.id = ?
+        `, [applicationId]);
+
+		if (appRows.length === 0) {
+			return res.status(404).json({ error: "Application not found." });
+		}
+		if (appRows[0].company_id !== companyId) {
+			return res.status(403).json({ error: "Forbidden: You do not own this job posting." });
+		}
+
+		await connection.execute('UPDATE applications SET status = ? WHERE id = ?', [status, applicationId]);
+
+		const { student_id, title, company_name } = appRows[0];
+		const message = `Your application for ${title} at ${company_name} has been ${status}.`;
+		await connection.execute('INSERT INTO notifications (user_id, message) VALUES (?, ?)', [student_id, message]);
+
+		res.json({ message: "Application status updated successfully." });
+
+	} catch (error) {
+		console.error("Error updating application status:", error);
+		res.status(500).json({ error: "Internal server error." });
+	}
+});
+
+app.get('/api/jobs/:jobId/applicants', verifyToken, async (req, res) => {
+	const { jobId } = req.params;
+	if (req.user.accountType !== 'company' || !req.user.companyId) {
+		return res.status(403).json({ error: 'Forbidden: Access denied.' });
+	}
+	try {
+		const [jobRows] = await connection.execute('SELECT company_id FROM jobs WHERE id = ?', [jobId]);
+		if (jobRows.length === 0 || jobRows[0].company_id !== req.user.companyId) {
+			return res.status(403).json({ error: 'Forbidden: You do not own this job posting.' });
+		}
+		const [applicants] = await connection.execute(`
+			SELECT 
+				u.id as studentId, 
+				a.id as applicationId,
+				u.name, 
+				sp.profile_pic_url AS profilePic, 
+				sp.major, 
+				sp.year,
+                a.status
+			FROM applications a
+			JOIN users u ON a.student_id = u.id
+			LEFT JOIN student_profiles sp ON u.id = sp.user_id
+			WHERE a.job_id = ?
+		`, [jobId]);
+		res.json(applicants);
+	} catch (error) {
+		console.error('Error fetching applicants:', error);
+		res.status(500).json({ error: 'Internal server error' });
+	}
+});
+
+app.get('/api/notifications', verifyToken, async (req, res) => {
+	if (req.user.accountType !== 'student') return res.status(200).json([]);
+	try {
+		const [notifications] = await connection.execute(
+			'SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 10',
+			[req.user.userId]
+		);
+		res.json(notifications);
+	} catch (error) {
+		console.error("Error fetching notifications:", error);
+		res.status(500).json({ error: 'Internal server error.' });
+	}
+});
+
+app.put('/api/notifications/:id/read', verifyToken, async (req, res) => {
+	if (req.user.accountType !== 'student') return res.status(403).json({ error: "Forbidden" });
+	try {
+		await connection.execute(
+			'UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?',
+			[req.params.id, req.user.userId]
+		);
+		res.json({ message: "Notification marked as read." });
+	} catch (error) {
+		console.error("Error marking notification as read:", error);
+		res.status(500).json({ error: 'Internal server error.' });
+	}
+});
+
+app.put('/api/subscribe', verifyToken, async (req, res) => {
+	if (req.user.accountType !== 'student') {
+		return res.status(403).json({ error: 'Only students can subscribe.' });
+	}
+	const { tier } = req.body;
+	if (!['Basic', 'Pro', 'Ultimate', 'Elite'].includes(tier)) {
+		return res.status(400).json({ error: 'Invalid subscription tier.' });
+	}
+
+	try {
+		await connection.execute('UPDATE users SET subscription_tier = ? WHERE id = ?', [tier, req.user.userId]);
+
+		const [users] = await connection.execute('SELECT * FROM users WHERE id = ?', [req.user.userId]);
+		const user = users[0];
+
+		const newToken = jwt.sign(
+			{
+				userId: user.id,
+				name: user.name,
+				email: user.email,
+				accountType: user.account_type,
+				companyId: user.company_id,
+				subscriptionTier: user.subscription_tier
+			},
+			JWT_SECRET,
+			{ expiresIn: "2h" }
+		);
+
+		res.json({ message: 'Subscription updated successfully', token: newToken });
+
+	} catch (error) {
+		console.error("Subscription update error:", error);
+		res.status(500).json({ error: 'Failed to update subscription' });
+	}
+});
+
+
+
+
+
 initializeDb().then(() => {
 	app.listen(port, () => {
-		console.log(`Server running on http://localhost:${port}`);
+		console.log(`Server running on https://api.reecedavis.com`);
 	});
 });
+
