@@ -14,14 +14,14 @@ const app = express();
 const port = 3001;
 
 const JWT_SECRET = process.env.ENCRYPTION_KEY;
-const FRONTEND_URL = "http://localhost:3000";
+const FRONTEND_URL = env.CLIENT_URI;
 
 // Microsoft OAuth Details
 const AZURE_CONFIG = {
 	CLIENT_ID: env.CLIENT_ID,
 	TENANT_ID: env.TENANT_ID,
 	CLIENT_SECRET: env.CLIENT_SECRET,
-	REDIRECT_URI: "http://localhost:3001/redirect",
+	REDIRECT_URI: env.REDIRECT_URI,
 	AUTHORITY: env.AUTHORITY,
 	SCOPES: "openid profile email User.Read"
 };
